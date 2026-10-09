@@ -264,6 +264,57 @@ mod tests {
     }
 
     #[test]
+    fn test_sol_and_opus_5_5_seeded_cost() {
+        let db = Database::memory().unwrap();
+        let usage = TokenUsage {
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 200,
+            cache_creation_tokens: 100,
+            model: None,
+            message_id: None,
+        };
+        let cases = [
+            (
+                AppType::Codex,
+                ["gpt-6.1-sol", "gpt-6.1-sol-high", "openai/gpt-6.1-sol"],
+                ["0.0014", "0.005", "0.00002", "0.00025", "0.00667"],
+            ),
+            (
+                AppType::Codex,
+                ["gpt-6-sol", "gpt-6-sol-xhigh", "openai/gpt-6-sol"],
+                ["0.0014", "0.005", "0.00004", "0.00025", "0.00669"],
+            ),
+            (
+                AppType::Claude,
+                [
+                    "claude-opus-5-5",
+                    "anthropic/claude-opus-5.5",
+                    "claude-opus-5-5-20260923",
+                ],
+                ["0.004", "0.01", "0.00004", "0.0005", "0.01454"],
+            ),
+        ];
+
+        for (app, models, expected) in cases {
+            for model in models {
+                let pricing = lookup_model_pricing(&db, model).expect("seeded model pricing");
+                let cost = calculate_cost(&app, &usage, Some(&pricing), Decimal::ONE)
+                    .expect("seeded model cost");
+                let actual = [
+                    cost.input_cost,
+                    cost.output_cost,
+                    cost.cache_read_cost,
+                    cost.cache_creation_cost,
+                    cost.total_cost,
+                ]
+                .map(format_decimal);
+                assert_eq!(actual, expected.map(str::to_string), "cost for {model}");
+            }
+        }
+    }
+
+    #[test]
     fn test_cost_calculation() {
         let usage = TokenUsage {
             input_tokens: 1000,

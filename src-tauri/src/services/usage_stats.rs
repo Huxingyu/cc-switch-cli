@@ -2326,6 +2326,86 @@ mod tests {
     }
 
     #[test]
+    fn test_backfill_missing_usage_costs_uses_sol_and_opus_5_5_pricing() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let cases = [
+            (
+                "gpt-6.1-sol",
+                "codex",
+                INPUT_TOKEN_SEMANTICS_TOTAL,
+                "0.006670",
+            ),
+            (
+                "gpt-6-sol",
+                "codex",
+                INPUT_TOKEN_SEMANTICS_TOTAL,
+                "0.006690",
+            ),
+            (
+                "claude-opus-5-5",
+                "claude",
+                INPUT_TOKEN_SEMANTICS_FRESH,
+                "0.014540",
+            ),
+        ];
+        {
+            let conn = lock_conn!(db.conn);
+            for (model, app, semantics, _) in cases {
+                conn.execute("DELETE FROM model_pricing WHERE model_id = ?1", [model])?;
+                for (suffix, cost) in [("missing", "0"), ("positive", "9")] {
+                    let request_id = format!("{model}-{suffix}");
+                    insert_usage_log(
+                        &conn,
+                        &request_id,
+                        app,
+                        "_session",
+                        model,
+                        "session_log",
+                        1000,
+                        1000,
+                        500,
+                        200,
+                        100,
+                        200,
+                        cost,
+                    )?;
+                    conn.execute(
+                        "UPDATE proxy_request_logs SET input_token_semantics = ?1
+                         WHERE request_id = ?2",
+                        params![semantics, request_id],
+                    )?;
+                }
+            }
+        }
+        assert_eq!(db.backfill_missing_usage_costs()?, 0);
+        db.ensure_model_pricing_seeded()?;
+        assert_eq!(db.backfill_missing_usage_costs()?, 3);
+        assert_eq!(db.backfill_missing_usage_costs()?, 0);
+
+        let conn = lock_conn!(db.conn);
+        for (model, _, _, expected_cost) in cases {
+            let (cost, pricing_model): (String, String) = conn.query_row(
+                "SELECT total_cost_usd, pricing_model FROM proxy_request_logs
+                 WHERE request_id = ?1",
+                [format!("{model}-missing")],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(cost, expected_cost, "backfilled cost for {model}");
+            assert_eq!(pricing_model, model);
+            let positive_cost: String = conn.query_row(
+                "SELECT total_cost_usd FROM proxy_request_logs WHERE request_id = ?1",
+                [format!("{model}-positive")],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                positive_cost, "9",
+                "positive cost for {model} must stay unchanged"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_backfill_distinguishes_legacy_and_total_cache_semantics() -> Result<(), AppError> {
         let db = Database::memory()?;
 

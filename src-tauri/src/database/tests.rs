@@ -3448,6 +3448,64 @@ fn model_pricing_gpt_6_astra_reseed_preserves_user_changes() {
 }
 
 #[test]
+fn model_pricing_sol_and_opus_5_5_reseed_preserves_user_changes() {
+    use crate::proxy::usage::calculator::lookup_model_pricing;
+
+    for model in ["gpt-6.1-sol", "gpt-6-sol", "claude-opus-5-5"] {
+        let db = Database::memory().expect("create memory db");
+        // An older catalog has no row and no user deletion marker.
+        db.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM model_pricing WHERE model_id = ?1", [model])
+            .unwrap();
+        assert!(lookup_model_pricing(&db, model).is_none());
+        db.ensure_model_pricing_seeded().unwrap();
+        assert!(lookup_model_pricing(&db, model).is_some());
+
+        let custom =
+            ModelPricingUpdate::new(model, "Custom price", "7", "9", "0.7", "8.75").unwrap();
+        db.upsert_model_pricing(&custom).unwrap();
+        db.ensure_model_pricing_seeded().unwrap();
+        let row: (String, String, String, String, String) = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT display_name, input_cost_per_million, output_cost_per_million,
+                        cache_read_cost_per_million, cache_creation_cost_per_million
+                 FROM model_pricing WHERE model_id = ?1",
+                [model],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                custom.display_name,
+                custom.input_cost_per_million,
+                custom.output_cost_per_million,
+                custom.cache_read_cost_per_million,
+                custom.cache_creation_cost_per_million,
+            ),
+            "custom pricing for {model} must survive reseeding"
+        );
+
+        assert!(db.delete_model_pricing(model).unwrap());
+        db.ensure_model_pricing_seeded().unwrap();
+        assert!(lookup_model_pricing(&db, model).is_none());
+    }
+}
+
+#[test]
 fn model_pricing_seeds_gpt_5_6_family_and_aliases() {
     let db = Database::memory().expect("create memory db");
     let conn = db.conn.lock().expect("lock conn");
@@ -3490,6 +3548,9 @@ fn model_pricing_seeds_synced_upstream_catalog() {
 
     let expected = [
         ("gpt-6-astra", "10", "50", "1", "12.5"),
+        ("gpt-6.1-sol", "2", "10", "0.10", "2.50"),
+        ("gpt-6-sol", "2", "10", "0.20", "2.50"),
+        ("claude-opus-5-5", "4", "20", "0.20", "5"),
         ("claude-fable-5", "10", "50", "1.00", "12.50"),
         ("claude-opus-4-6", "5", "25", "0.50", "6.25"),
         ("claude-sonnet-4-6", "3", "15", "0.30", "3.75"),
